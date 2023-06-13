@@ -6,7 +6,6 @@ Un fichier requirements.txt est a disposition pour installer toutes les dépenda
 
 ```
 pip install -r requirements.txt
-
 ```
 
 #Téléchargement des données
