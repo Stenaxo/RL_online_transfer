@@ -1,6 +1,6 @@
 ## RL_online_transfer
 
-#Environnement python
+# Environnement python
 
 Un fichier requirements.txt est a disposition pour installer toutes les dépendances nécessaires.
 
@@ -8,7 +8,7 @@ Un fichier requirements.txt est a disposition pour installer toutes les dépenda
 pip install -r requirements.txt
 ```
 
-#Téléchargement des données
+# Téléchargement des données
 
 Il faut télécharger la base de données de la manière suivante tout en la placant dans le même répertoire que le code. Modifier le cd avec votre répertoire.
 
