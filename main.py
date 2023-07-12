@@ -1,24 +1,19 @@
 import argparse
 import os
 import torch
-import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
-import torchvision.datasets as datasets
-import torchvision.models as models
 import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import StepLR
-from torch.utils.data import Subset
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+import random
+from torch.utils.data import DataLoader
 
 parser = argparse.ArgumentParser(description='PyTorch linear model')
 parser.add_argument('data', metavar='DIR', nargs='?', default='.',
@@ -39,12 +34,12 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
-parser.add_argument('--optimizer', default='SGD', 
+parser.add_argument('--optimizer', default='Adam', 
                     help = 'choose the optimiizer between SGD and ADAM', type = str)
 
-class AlphaChannelRemoval(object):
+class ConvertToRGB(object):
     def __call__(self, img):
-        if img.mode == 'RGBA':
+        if img.mode != 'RGB':
             img = img.convert('RGB')
         return img
 
@@ -66,9 +61,29 @@ class CustomDataset(torch.utils.data.Dataset):
         label = F.one_hot(torch.tensor(label), num_classes=12).squeeze().to(torch.float32)
         return image, label
 
+class LinearClassifier(torch.nn.Module):
+  def __init__(self, input_dim=150528, output_dim=2):
+    super(LinearClassifier, self).__init__()
+    self.linear = torch.nn.Linear(input_dim, output_dim)
+    #self.sigmoid = torch.nn.Sigmoid() 
+    #self.softmax = torch.nn.Softmax(dim=1)
+
+  def forward(self, x):
+          x = self.linear(x)
+          #x = rdm pour le modèle aléatoire
+          #x = self.sigmoid(x)
+          #x = self.softmax(x)
+          return x
+
 def main():
+    args = parser.parse_args()
     if not os.path.exists('result'):
         os.makedirs('result')
+    
+    np.random.seed(69)
+    torch.manual_seed(69)
+    random.seed(69)
+    main_worker(args.gpu, args)
 
 def main_worker(gpu, args):
 
@@ -78,7 +93,7 @@ def main_worker(gpu, args):
         print("Use GPU: {} for training".format(args.gpu))
     # create model
 
-
+    model = LinearClassifier()
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
         print('using CPU, this will be slow')
 
@@ -111,7 +126,7 @@ def main_worker(gpu, args):
         device = torch.device("cpu")
     # define loss function (criterion), optimizer, and learning rate scheduler
 
-    criterion = nn.CrossEntropyLoss().to(device)
+    criterion = nn.BCEWithLogitsLoss().to(device)
 
     if args.optimizer == 'SGD':
         optimizer = torch.optim.SGD(model.parameters(), args.lr,
@@ -129,14 +144,21 @@ def main_worker(gpu, args):
     traindir = os.path.join(args.data, 'train')
     testdir = os.path.join(args.data, 'test')
     valdir = os.path.join(args.data, 'validation')
-    valloader, testloader, trainloader = dataset_load(traindir, testdir, valdir)
-    
+    trainloader, valloader, testloader = dataset_load(traindir, testdir, valdir)
+    train(modele = model,
+          optimizer= optimizer,
+          criterion = criterion,
+          device= device,
+          trainloader= trainloader,
+          valloader= valloader,
+          n_epoch= args.n_epoch)
+
 
 
 def dataset_load(args, train_path, test_path, val_path):
 
     with open(train_path, 'r') as f:
-        lines = f.readlines()
+        lines = f.readlines()#[next(f) for _ in range(1000)] 
 
     # Créer des listes pour stocker les chemins d'image et les étiquettes
     image_paths = []
@@ -145,112 +167,184 @@ def dataset_load(args, train_path, test_path, val_path):
     # Parcourir chaque ligne du fichier texte et extraire les informations
     for line in lines:
         line = line.strip().split(' ')
-        image_paths.append("train/" + line[0])
-        labels.append(int(line[1]))
+        if line[1] == "0" or line[1] == "1":
+            
+            image_paths.append("train/" + line[0])
+        
+            labels.append(int(line[1]))
 
     # Appliquer les transformations d'image si nécessaire
-    transform = transforms.Compose([
-        AlphaChannelRemoval(),
-        #ResizeWithBackground((384,216)),
+    transform_train = transforms.Compose([
+        ConvertToRGB(),
+        transforms.Resize(256),
+        transforms.RandomCrop(224),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.8869, 0.8856, 0.8831),(0.1999, 0.2032, 0.2101)),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         transforms.Lambda(lambda x: torch.flatten(x))
     ])
-    df_train = CustomDataset(image_paths, labels, transform=transform)
-    trainloader = DataLoader(df_train, batch_size= args.batch_size)
 
-    with open(test_path, 'r') as f:
-        lines = f.readlines()
-
-    # Créer des listes pour stocker les chemins d'image et les étiquettes
-    image_paths = []
-    labels = []
-
-    # Parcourir chaque ligne du fichier texte et extraire les informations
-    for line in lines:
-        line = line.strip().split(' ')
-        image_paths.append("test/" + line[0])
-        labels.append(int(line[1]))
-
-        df_test = CustomDataset(image_paths, labels, transform=transform)
-        testloader = DataLoader(df_test, batch_size=args.batch_size, shuffle=True)
+    df_train = CustomDataset(image_paths, labels, transform=transform_train)
+    trainloader = DataLoader(df_train, batch_size=args.batch_size, shuffle=True)
 
     with open(val_path, 'r') as f:
-        lines = f.readlines()
+        lines = f.readlines()#[next(f) for _ in range(1000)] 
 
-    # Créer des listes pour stocker les chemins d'image et les étiquettes
-    image_paths = []
-    labels = []
+        # Créer des listes pour stocker les chemins d'image et les étiquettes
+        image_paths = []
+        labels = []
 
-    # Parcourir chaque ligne du fichier texte et extraire les informations
-    for line in lines:
-        line = line.strip().split(' ')
-        image_paths.append("val/" + line[0])
-        labels.append(int(line[1]))
+        # Parcourir chaque ligne du fichier texte et extraire les informations
+        for line in lines:
+            line = line.strip().split(' ')
+            if line[1] == "0"  or line[1] == "1":
+                
+                image_paths.append("validation/" + line[0])
+            
+                labels.append(int(line[1]))
 
-        df_val = CustomDataset(image_paths, labels, transform=transform)
-        valloader = DataLoader(df_test, batch_size=args.batch_size, shuffle=True)
-    return valloader, testloader, trainloader
+        # Appliquer les transformations d'image si nécessaire
+        transform_val = transforms.Compose([
+            ConvertToRGB(),
+            transforms.Resize(256), 
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Lambda(lambda x: torch.flatten(x))
+        ])
+        df_val = CustomDataset(image_paths, labels, transform=transform_val)
+        valloader = DataLoader(df_val, batch_size=args.batch_size, shuffle=True)
 
-def train(model, optimizer, criterion, device, trainloader, n_epoch, valloader):
+        with open(test_path, 'r') as f:
+            lines = f.readlines()
 
-    model.train()
+        # Créer des listes pour stocker les chemins d'image et les étiquettes
+        image_paths = []
+        labels = []
 
-    scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
-    all_loss = []
-    for epoch in range(n_epoch):
-        temp_loss = []
-        for images, labels in trainloader:
-            images = images.to(device, non_blocking = True) 
-            labels = labels.to(device, non_blocking = True) 
-            # Réinitialiser les gradients
-            optimizer.zero_grad()
-            # Calculer les sorties du modèle
+        # Parcourir chaque ligne du fichier texte et extraire les informations
+        for line in lines:
+            line = line.strip().split(' ')
+            image_paths.append("test/" + line[0])
+            labels.append(int(line[1]))
+
+        # Appliquer les transformations d'image si nécessaire
+        transformation = transforms.Compose([
+            ConvertToRGB(),
+            transforms.Resize(256), 
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Lambda(lambda x: torch.flatten(x))
+        ])
+
+        df_test = CustomDataset(image_paths, labels, transform=transformation)
+        testloader = DataLoader(df_test, batch_size=args.batch_size, shuffle=True)
+        return trainloader, valloader, testloader
+
+def iterate_data(dataloader, model, criterion, device, optimizer=None, is_training=False):
+
+    loss_list = []
+    total_samples = 0
+    correct_predictions = 0
+
+    if is_training:
+        model.train()
+    else:
+        model.eval()
+
+    with torch.set_grad_enabled(is_training):
+        for images, labels in dataloader:
+            images = images.to(device)
+            labels = labels.to(device)
+
+            # forward pass
             output = model(images)
-            # Calculer la perte en utilisant les sorties et les étiquettes
             loss = criterion(output, labels)
-            # Rétropropagation et mise à jour des poids
-            loss.backward()
-            optimizer.step()
+            loss_list.append(loss.item())  # Ajouter la perte actuelle à la liste
 
-            temp_loss.append(loss.item())
+            total_samples += images.size(0)  # Accumuler le nombre total d'échantillons
 
-        scheduler.step()
+            labels_ = torch.argmax(labels, dim=1)
+            predicted = torch.argmax(output, dim=1)
+            correct_predictions += (predicted == labels_).sum().item()  # Accumuler le nombre de prédictions correctes
 
-        train_loss = torch.mean(torch.tensor(temp_loss), dim=0).item()
-        all_loss.append(train_loss)
+            if is_training:
+                # backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
+                # update weights
+                optimizer.step()
 
-            # Boucle de validation
-        model.eval()  # Mode d'évaluation
-        correct = 0
-        total = 0
-        val_loss = 0
-        with torch.no_grad():
-            for images, labels in valloader:
-                # Préparation des données de validation
-                images = images.to(device)
-                labels = labels.to(device)
+    mean_loss = torch.tensor(loss_list).mean().item()
+    mean_accuracy = (100.0 * correct_predictions) / total_samples
+    return mean_loss, mean_accuracy
 
-                output = model(images)
-                val_loss += criterion(output, labels).item()
 
-                _, predicted = torch.max(output.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
+def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader):
 
-        # Calcul de la précision et de la perte moyenne de validation pour cette époque
-        val_accuracy = 100 * correct / total
-        val_loss /= len(valloader)
-        with open('output.txt', 'w') as f:
-            print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
-            print(f"Epoch: {epoch}, loss: {np.mean(temp_loss)}", file=f)
+    list_train_loss = []
+    list_train_accuracy = []
+    list_val_loss = []
+    list_val_accuracy = []
 
-        plt.plot(all_loss)
-        plt.savefig(os.path.join('result','loss_graph.png'))
-    
-    torch.save(model.state_dict(), os.path.join('result','linear_model.pth'))
+    for epoch in range(n_epoch):
         
+        #train
+        train_loss, train_accuracy = iterate_data(model = modele, 
+                                                dataloader= trainloader, 
+                                                is_training=True, 
+                                                optimizer=optimizer,
+                                                criterion=criterion,
+                                                device = device)
+        list_train_loss.append(train_loss)
+        list_train_accuracy.append(train_accuracy)
 
+
+        #validation
+
+        val_loss, val_accuracy = iterate_data(model = modele, 
+                                                dataloader = valloader, 
+                                            is_training= False,
+                                            optimizer=optimizer,
+                                            criterion=criterion,
+                                            device = device)
+        list_val_loss.append(val_loss)
+        list_val_accuracy.append(val_accuracy)
+
+   
+    with open('output.txt', 'w') as f:
+        print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Train Accuracy : {train_accuracy}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
+
+    plot_graph(name = "Training loss of the linear model", 
+               label_one="train",
+               name_f='train_loss')
+    
+    plot_graph(name = "Validation loss of the linear model",
+               label_one="val",
+               name_f='val_loss')
+    plot_graph(name= "Validation accuracy of the linear model",
+               label_one= "val",
+               name_f='val_accuracy')
+    
+    torch.save(modele.state_dict(), os.path.join('result','linear_model.pth'))
+        
+def plot_graph(name,name_f, object, label_one, two_curves = False, second_name = None, second_label = None,ylabel_loss = True):
+    plt.style.use("ggplot")
+    plt.rcParams.update()
+    plt.figure(figsize=(10, 5))
+    plt.title(name)
+    plt.plot(object, label=label_one)
+    if two_curves == True:
+        plt.plot(second_name, label=second_label)
+    plt.xlabel("epochs")
+    if ylabel_loss == True:
+        plt.ylabel("loss")
+    else:
+        plt.ylabel("accuracy")
+    plt.legend()
+    plt.savefig(os.path.join('result',f'{name_f}.png'))
 
 if __name__ == '__main__':
     main()
