@@ -14,6 +14,7 @@ from PIL import Image
 import torch.nn.functional as F
 import random
 from torch.utils.data import DataLoader
+import csv
 
 parser = argparse.ArgumentParser(description='PyTorch linear model')
 parser.add_argument('data', metavar='DIR', nargs='?', default='.',
@@ -36,6 +37,7 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--optimizer', default='Adam', 
                     help = 'choose the optimiizer between SGD and ADAM', type = str)
+parser.add_argument('--repetition', default = None, type=int, help= 'Choose the number of repetitions for the trainloop')
 
 class ConvertToRGB(object):
     def __call__(self, img):
@@ -134,13 +136,17 @@ def main_worker(gpu, args):
     testdir = os.path.join(args.data, 'test/image_list.txt')
     valdir = os.path.join(args.data, 'validation/image_list.txt')
     trainloader, valloader, testloader = dataset_load(args, traindir, testdir, valdir)
+        
     train(modele = model,
           optimizer= optimizer,
           criterion = criterion,
           device= device,
           trainloader= trainloader,
           valloader= valloader,
-          n_epoch= args.epochs)
+          n_epoch= args.epochs,
+          condition = (args.repetition != None),
+          repeat = args.repetition
+          )
 
 
 
@@ -271,56 +277,103 @@ def iterate_data(dataloader, model, criterion, device, optimizer=None, is_traini
     return mean_loss, mean_accuracy
 
 
-def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader):
+def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader, condition, repeat):
+    
+    train_loss_0, train_accuracy_0 = iterate_data(model = modele, 
+                                               dataloader= trainloader, 
+                                               is_training=False, 
+                                               criterion=criterion,
+                                               device = device)
+    val_loss_0, val_accuracy_0 = iterate_data(model = modele, 
+                                                dataloader = valloader, 
+                                                is_training= False,
+                                                criterion=criterion,
+                                                device = device)
+    print(f"Train Loss: {train_loss_0}, Train Accuracy : {train_accuracy_0} Val Loss: {val_loss_0}, Val Accuracy: {val_accuracy_0}%")
+    train_loss_matrix = []
+    train_accuracy_matrix = []
+    val_loss_matrix = []
+    val_accuracy_matrix = []
+    r = 69
+    rep = 0
+    for _ in range(repeat if condition else 1):
+        list_train_loss = [train_loss_0]
+        list_train_accuracy = [train_accuracy_0]
+        list_val_loss = [val_loss_0]
+        list_val_accuracy = [val_accuracy_0]
+        rep += 1
+        print(f"Repetition:{rep}")
+        for epoch in range(n_epoch):
+            
+            #train
+            train_loss, train_accuracy = iterate_data(model = modele, 
+                                                    dataloader= trainloader, 
+                                                    is_training=True, 
+                                                    optimizer=optimizer,
+                                                    criterion=criterion,
+                                                    device = device)
+            list_train_loss.append(train_loss)
+            list_train_accuracy.append(train_accuracy)
 
-    list_train_loss = []
-    list_train_accuracy = []
-    list_val_loss = []
-    list_val_accuracy = []
-
-    for epoch in range(n_epoch):
-        
-        #train
-        train_loss, train_accuracy = iterate_data(model = modele, 
-                                                dataloader= trainloader, 
-                                                is_training=True, 
+            #validation
+            val_loss, val_accuracy = iterate_data(model = modele, 
+                                                dataloader = valloader, 
+                                                is_training= False,
                                                 optimizer=optimizer,
                                                 criterion=criterion,
                                                 device = device)
-        list_train_loss.append(train_loss)
-        list_train_accuracy.append(train_accuracy)
+            list_val_loss.append(val_loss)
+            list_val_accuracy.append(val_accuracy)
+            train_loss_matrix.append(list_train_loss)
+            train_accuracy_matrix.append(list_train_accuracy)
+            val_loss_matrix.append(list_val_loss)
+            val_accuracy_matrix.append(list_val_accuracy)
 
+            with open('output.txt', 'w') as f:
+                print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Train Accuracy : {train_accuracy}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
+        r += 1
+        torch.manual_seed(r)
 
-        #validation
+    save_matrix_to_csv(filename='train_loss_per_repetition',
+                    matrix=train_loss_matrix,
+                    num_repetitions=repeat)
+    save_matrix_to_csv(filename='val_loss_per_repetition',
+                    matrix=val_loss_matrix,
+                    num_repetitions=repeat)
+    save_matrix_to_csv(filename='train_accuracy_per_repetition',
+                    matrix=train_accuracy_matrix,
+                    num_repetitions=repeat)
+    save_matrix_to_csv(filename='val_accuracy_per_repetition',
+                    matrix=val_accuracy_matrix,
+                    num_repetitions=repeat)
+    averages_train_loss = [sum(column) / len(column) for column in zip(*train_loss_matrix)]
+    averages_train_accuracy = [sum(column) / len(column) for column in zip(*train_accuracy_matrix)]
+    averages_val_loss = [sum(column) / len(column) for column in zip(*val_loss_matrix)]
+    averages_val_accuracy = [sum(column) / len(column) for column in zip(*val_accuracy_matrix)]
+    save_results_to_csv(filename = 'average_loss_and_accuracy',
+                        train_loss=averages_train_loss,
+                        train_accuracy=averages_train_accuracy,
+                        val_loss=averages_val_loss,
+                        val_accuracy=averages_val_accuracy)
 
-        val_loss, val_accuracy = iterate_data(model = modele, 
-                                                dataloader = valloader, 
-                                            is_training= False,
-                                            optimizer=optimizer,
-                                            criterion=criterion,
-                                            device = device)
-        list_val_loss.append(val_loss)
-        list_val_accuracy.append(val_accuracy)
-        print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Train Accuracy : {train_accuracy}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
-   
-        with open('output.txt', 'w') as f:
-            print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Train Accuracy : {train_accuracy}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
-
+    plot_graph(name = "Training accuracy of the linear model",
+               object = averages_train_accuracy, 
+               label_one="train",
+               name_f='train_accuracy')
     plot_graph(name = "Training loss of the linear model",
-               object = list_train_loss, 
+               object = averages_train_loss, 
                label_one="train",
                name_f='train_loss')
-    
     plot_graph(name = "Validation loss of the linear model",
-               object=list_val_loss,
+               object=averages_val_loss,
                label_one="val",
                name_f='val_loss')
     plot_graph(name= "Validation accuracy of the linear model",
-               object=list_val_accuracy,
+               object=averages_val_accuracy,
                label_one= "val",
                name_f='val_accuracy')
     
-    torch.save(modele.state_dict(), os.path.join('result','linear_model.pth'))
+    torch.save(modele.state_dict(), os.path.join('result','parameters.pth'))
         
 def plot_graph(name,name_f, object, label_one, two_curves = False, second_name = None, second_label = None,ylabel_loss = True):
     plt.style.use("ggplot")
@@ -337,6 +390,29 @@ def plot_graph(name,name_f, object, label_one, two_curves = False, second_name =
         plt.ylabel("accuracy")
     plt.legend()
     plt.savefig(os.path.join('result',f'{name_f}.png'))
+
+
+
+def save_results_to_csv(filename, train_loss, train_accuracy, val_loss, val_accuracy):
+    data = zip(train_loss, train_accuracy, val_loss, val_accuracy)
+
+    with open(os.path.join('result', filename), 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['Epoch', 'Train Loss', 'Train Accuracy', 'Val Loss', 'Val Accuracy'])
+        for i, row in enumerate(data):
+            writer.writerow([i] + list(row))
+
+def save_matrix_to_csv(filename, matrix, num_repetitions):
+    with open(os.path.join('result', filename), 'w', newline='') as file:
+        writer = csv.writer(file)
+        
+        header = ['Epoch'] + [f'Repetition {i+1}' for i in range(num_repetitions)]
+        writer.writerow(header)
+        
+        for epoch, repetitions in enumerate(matrix):
+            row_data = [epoch] + repetitions
+            writer.writerow(row_data)
+
 
 if __name__ == '__main__':
     main()
