@@ -18,15 +18,15 @@ from torch.utils.data import DataLoader
 parser = argparse.ArgumentParser(description='PyTorch linear model')
 parser.add_argument('data', metavar='DIR', nargs='?', default='.',
                     help='path to dataset (default: actual directory)')
-parser.add_argument('--epochs', default=50, type=int, metavar='N',
+parser.add_argument('--epochs', default=25, type=int, metavar='N',
                     help='number of total epochs to run')
-parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--gpu', default=None, type=int,
                     help='GPU id to use.')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=32, type=int,
                     metavar='N',
-                    help='mini-batch size (default: 256), this is the total '
+                    help='mini-batch size (default: 32), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
@@ -58,7 +58,7 @@ class CustomDataset(torch.utils.data.Dataset):
         image = Image.open(image_path)
         if self.transform:
             image = self.transform(image)
-        label = F.one_hot(torch.tensor(label), num_classes=12).squeeze().to(torch.float32)
+        label = F.one_hot(torch.tensor(label), num_classes=2).squeeze().to(torch.float32)
         return image, label
 
 class LinearClassifier(torch.nn.Module):
@@ -97,17 +97,6 @@ def main_worker(gpu, args):
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
         print('using CPU, this will be slow')
 
-    elif args.distributed:
-        # For multiprocessing distributed, DistributedDataParallel constructor
-        # should always set the single device scope, otherwise,
-        # DistributedDataParallel will use all available devices.
-        if torch.cuda.is_available():
-            if args.gpu is not None:
-                torch.cuda.set_device(args.gpu)
-                model.cuda(args.gpu)
-            else:
-                model.cuda()
-
     elif args.gpu is not None and torch.cuda.is_available():
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
@@ -141,17 +130,17 @@ def main_worker(gpu, args):
     
 
     #data_loading code
-    traindir = os.path.join(args.data, 'train')
-    testdir = os.path.join(args.data, 'test')
-    valdir = os.path.join(args.data, 'validation')
-    trainloader, valloader, testloader = dataset_load(traindir, testdir, valdir)
+    traindir = os.path.join(args.data, 'train/image_list.txt')
+    testdir = os.path.join(args.data, 'test/image_list.txt')
+    valdir = os.path.join(args.data, 'validation/image_list.txt')
+    trainloader, valloader, testloader = dataset_load(args, traindir, testdir, valdir)
     train(modele = model,
           optimizer= optimizer,
           criterion = criterion,
           device= device,
           trainloader= trainloader,
           valloader= valloader,
-          n_epoch= args.n_epoch)
+          n_epoch= args.epochs)
 
 
 
@@ -312,19 +301,22 @@ def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader)
                                             device = device)
         list_val_loss.append(val_loss)
         list_val_accuracy.append(val_accuracy)
-
-   
-    with open('output.txt', 'w') as f:
         print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Train Accuracy : {train_accuracy}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
+   
+        with open('output.txt', 'w') as f:
+            print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Train Accuracy : {train_accuracy}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
 
-    plot_graph(name = "Training loss of the linear model", 
+    plot_graph(name = "Training loss of the linear model",
+               object = list_train_loss, 
                label_one="train",
                name_f='train_loss')
     
     plot_graph(name = "Validation loss of the linear model",
+               object=list_val_loss,
                label_one="val",
                name_f='val_loss')
     plot_graph(name= "Validation accuracy of the linear model",
+               object=list_val_accuracy,
                label_one= "val",
                name_f='val_accuracy')
     
