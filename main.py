@@ -23,7 +23,7 @@ parser.add_argument('--epochs', default=25, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
-parser.add_argument('--gpu', default=None, type=int,
+parser.add_argument('--gpu', default=0, type=int,
                     help='GPU id to use.')
 parser.add_argument('-b', '--batch-size', default=32, type=int,
                     metavar='N',
@@ -279,24 +279,30 @@ def iterate_data(dataloader, model, criterion, device, optimizer=None, is_traini
 
 def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader, condition, repeat):
     
-    train_loss_0, train_accuracy_0 = iterate_data(model = modele, 
-                                               dataloader= trainloader, 
-                                               is_training=False, 
-                                               criterion=criterion,
-                                               device = device)
-    val_loss_0, val_accuracy_0 = iterate_data(model = modele, 
-                                                dataloader = valloader, 
-                                                is_training= False,
-                                                criterion=criterion,
-                                                device = device)
-    print(f"Train Loss: {train_loss_0}, Train Accuracy : {train_accuracy_0} Val Loss: {val_loss_0}, Val Accuracy: {val_accuracy_0}%")
     train_loss_matrix = []
     train_accuracy_matrix = []
     val_loss_matrix = []
     val_accuracy_matrix = []
     r = 69
     rep = 0
+
     for _ in range(repeat if condition else 1):
+        
+        for layer in modele.children():
+            if hasattr(layer, 'reset_parameters'):
+                layer.reset_parameters()
+        train_loss_0, train_accuracy_0 = iterate_data(model = modele, 
+                                            dataloader= trainloader, 
+                                            is_training=False, 
+                                            criterion=criterion,
+                                            device = device)
+        val_loss_0, val_accuracy_0 = iterate_data(model = modele, 
+                                            dataloader = valloader, 
+                                            is_training= False,
+                                            criterion=criterion,
+                                            device = device)
+        print(f"Train Loss 0: {train_loss_0}, Train Accuracy 0 : {train_accuracy_0} Val Loss 0: {val_loss_0}, Val Accuracy 0: {val_accuracy_0}%")
+
         list_train_loss = [train_loss_0]
         list_train_accuracy = [train_accuracy_0]
         list_val_loss = [val_loss_0]
@@ -332,7 +338,9 @@ def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader,
             with open('output.txt', 'w') as f:
                 print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Train Accuracy : {train_accuracy}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
         r += 1
+        np.random.seed(r)
         torch.manual_seed(r)
+        random.seed(r)
 
     save_matrix_to_csv(filename='train_loss_per_repetition',
                     matrix=train_loss_matrix,
