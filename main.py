@@ -15,6 +15,10 @@ import torch.nn.functional as F
 import random
 from torch.utils.data import DataLoader
 import csv
+import pandas as pd
+import torchvision.models as models
+
+
 
 parser = argparse.ArgumentParser(description='PyTorch linear model')
 parser.add_argument('data', metavar='DIR', nargs='?', default='.',
@@ -27,7 +31,7 @@ parser.add_argument('--gpu', default=0, type=int,
                     help='GPU id to use.')
 parser.add_argument('-b', '--batch-size', default=32, type=int,
                     metavar='N',
-                    help='mini-batch size (default: 32), this is the total '
+                    help='mini_batch size (default: 32), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
@@ -38,6 +42,11 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
 parser.add_argument('--optimizer', default='Adam', 
                     help = 'choose the optimiizer between SGD and ADAM', type = str)
 parser.add_argument('--repetition', default = None, type=int, help= 'Choose the number of repetitions for the trainloop')
+parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
+                    choices=model_names,
+                    help='model architecture: ' +
+                        ' | '.join(model_names) +
+                        ' (default: resnet18)')
 
 class ConvertToRGB(object):
     def __call__(self, img):
@@ -89,33 +98,19 @@ def main():
 
 def main_worker(gpu, args):
 
-    args.gpu = gpu
-
-    if args.gpu is not None:
-        print("Use GPU: {} for training".format(args.gpu))
-    # create model
-
-    model = LinearClassifier()
-    if not torch.cuda.is_available() and not torch.backends.mps.is_available():
-        print('using CPU, this will be slow')
-
-    elif args.gpu is not None and torch.cuda.is_available():
-        torch.cuda.set_device(args.gpu)
-        model = model.cuda(args.gpu)
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-        model = model.to(device)
-
     if torch.cuda.is_available():
-        if args.gpu:
-            device = torch.device('cuda:{}'.format(args.gpu))
+        if args.gpu is not None:
+            device = torch.device(f'cuda:{args.gpu}')
+            print(f"Use GPU: {args.gpu} for training")
         else:
             device = torch.device("cuda")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
+        print('using CPU, this will be slow')
     # define loss function (criterion), optimizer, and learning rate scheduler
+    model = LinearClassifier().to(device)
 
     criterion = nn.BCEWithLogitsLoss().to(device)
 
@@ -287,10 +282,9 @@ def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader,
     rep = 0
 
     for _ in range(repeat if condition else 1):
-        
-        for layer in modele.children():
-            if hasattr(layer, 'reset_parameters'):
-                layer.reset_parameters()
+
+        modele = LinearClassifier().to(device)
+
         train_loss_0, train_accuracy_0 = iterate_data(model = modele, 
                                             dataloader= trainloader, 
                                             is_training=False, 
@@ -330,10 +324,7 @@ def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader,
                                                 device = device)
             list_val_loss.append(val_loss)
             list_val_accuracy.append(val_accuracy)
-            train_loss_matrix.append(list_train_loss)
-            train_accuracy_matrix.append(list_train_accuracy)
-            val_loss_matrix.append(list_val_loss)
-            val_accuracy_matrix.append(list_val_accuracy)
+
 
             with open('output.txt', 'w') as f:
                 print(f"Epoch [{epoch+1}/{n_epoch}], Train Loss: {train_loss}, Train Accuracy : {train_accuracy}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}%")
@@ -341,19 +332,74 @@ def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader,
         np.random.seed(r)
         torch.manual_seed(r)
         random.seed(r)
+        train_loss_matrix.append(list_train_loss)
+        train_accuracy_matrix.append(list_train_accuracy)
+        val_loss_matrix.append(list_val_loss)
+        val_accuracy_matrix.append(list_val_accuracy)
+
+    std_train_loss = np.std(train_loss_matrix, axis=0) # Compute std along the specified axis.
+    std_train_accuracy = np.std(train_accuracy_matrix, axis=0)
+    std_val_loss = np.std(val_loss_matrix, axis=0)
+    std_val_accuracy = np.std(val_accuracy_matrix, axis=0)
+
+# save the standard deviations to csv
+    save_results_to_csv(filename = 'std_loss_and_accuracy',
+                            train_loss=std_train_loss,
+                            train_accuracy=std_train_accuracy,
+                            val_loss=std_val_loss,
+                            val_accuracy=std_val_accuracy)
+    """
+    plot_graph(name = "standart deviance of the training accuracy for the linear model",
+               object = std_train_accuracy, 
+               label_one="train",
+               name_f='std_train_accuracy')
+    plot_graph(name = "standart deviance of the training loss for the linear model",
+               object = std_train_loss, 
+               label_one="train",
+               name_f='std_train_loss')
+    plot_graph(name = "standart deviance of the validation loss for the linear model",
+               object=std_val_loss,
+               label_one="val",
+               name_f='std_val_loss')
+    plot_graph(name= "standart deviance of the validation accuracy for the linear model",
+               object=std_val_accuracy,
+               label_one= "val",
+               name_f='std_val_accuracy')
+"""
 
     save_matrix_to_csv(filename='train_loss_per_repetition',
                     matrix=train_loss_matrix,
                     num_repetitions=repeat)
+    plot_rep(df = train_loss_matrix,
+             filename='train_loss_per_repetition',
+             title='train loss for each repetition',
+             ylabel='train loss',
+             num_repetitions= repeat)
+    
     save_matrix_to_csv(filename='val_loss_per_repetition',
                     matrix=val_loss_matrix,
                     num_repetitions=repeat)
+    plot_rep(df = val_loss_matrix,
+             filename='val_loss_per_repetition',
+             title='val loss for each repetition',
+             ylabel='val loss',
+             num_repetitions= repeat)
     save_matrix_to_csv(filename='train_accuracy_per_repetition',
                     matrix=train_accuracy_matrix,
                     num_repetitions=repeat)
+    plot_rep(df = train_accuracy_matrix,
+             filename='train_accuracy_per_repetition',
+             title='train accuracy for each repetition',
+             ylabel='train accuracy',
+             num_repetitions= repeat)
     save_matrix_to_csv(filename='val_accuracy_per_repetition',
                     matrix=val_accuracy_matrix,
                     num_repetitions=repeat)
+    plot_rep(df = val_accuracy_matrix,
+             filename='val__accuracy_per_repetition',
+             title='val accuracy for each repetition',
+             ylabel='val accuracy',
+             num_repetitions= repeat)
     averages_train_loss = [sum(column) / len(column) for column in zip(*train_loss_matrix)]
     averages_train_accuracy = [sum(column) / len(column) for column in zip(*train_accuracy_matrix)]
     averages_val_loss = [sum(column) / len(column) for column in zip(*val_loss_matrix)]
@@ -364,25 +410,34 @@ def train(modele, optimizer, criterion, device, trainloader, n_epoch, valloader,
                         val_loss=averages_val_loss,
                         val_accuracy=averages_val_accuracy)
 
-    plot_graph(name = "Training accuracy of the linear model",
+    plot_graph(name = "Average training accuracy of the linear model",
+               second_name = 'std',
                object = averages_train_accuracy, 
                label_one="train",
-               name_f='train_accuracy')
-    plot_graph(name = "Training loss of the linear model",
+               name_f='train_accuracy',
+               std_dev=std_train_accuracy)
+    plot_graph(name = "Average training loss of the linear model",
+               second_name = 'std',
                object = averages_train_loss, 
                label_one="train",
-               name_f='train_loss')
-    plot_graph(name = "Validation loss of the linear model",
+               name_f='train_loss',
+               std_dev= std_train_loss)
+    plot_graph(name = "Average validation loss of the linear model",
+               second_name = 'std',
                object=averages_val_loss,
                label_one="val",
-               name_f='val_loss')
-    plot_graph(name= "Validation accuracy of the linear model",
+               name_f='val_loss',
+               std_dev= std_val_loss)
+    plot_graph(name= "Average validation accuracy of the linear model",
+               second_name = 'std',
                object=averages_val_accuracy,
                label_one= "val",
-               name_f='val_accuracy')
+               name_f='val_accuracy',
+               std_dev= std_val_accuracy)
+    
     
     torch.save(modele.state_dict(), os.path.join('result','parameters.pth'))
-        
+"""        
 def plot_graph(name,name_f, object, label_one, two_curves = False, second_name = None, second_label = None,ylabel_loss = True):
     plt.style.use("ggplot")
     plt.rcParams.update()
@@ -398,8 +453,25 @@ def plot_graph(name,name_f, object, label_one, two_curves = False, second_name =
         plt.ylabel("accuracy")
     plt.legend()
     plt.savefig(os.path.join('result',f'{name_f}.png'))
+"""
 
+def plot_graph(name, name_f, object, label_one, std_dev=None, second_name = None, second_label=None, ylabel_loss = True):
+    plt.style.use("ggplot")
+    plt.rcParams.update()
+    plt.figure(figsize=(10, 5))
+    plt.title(name)
+    plt.plot(object, label=label_one)
 
+    plt.fill_between(range(len(object)), [m - d for m, d in zip(object, std_dev)], [m + d for m, d in zip(object, std_dev)], alpha=0.2)
+    plt.plot(second_name, label=second_label)
+
+    plt.xlabel("epochs")
+    if ylabel_loss == True:
+        plt.ylabel("loss")
+    else:
+        plt.ylabel("accuracy")
+    plt.legend()
+    plt.savefig(os.path.join('result',f'{name_f}.png'))
 
 def save_results_to_csv(filename, train_loss, train_accuracy, val_loss, val_accuracy):
     data = zip(train_loss, train_accuracy, val_loss, val_accuracy)
@@ -411,6 +483,9 @@ def save_results_to_csv(filename, train_loss, train_accuracy, val_loss, val_accu
             writer.writerow([i] + list(row))
 
 def save_matrix_to_csv(filename, matrix, num_repetitions):
+
+    matrix = np.array(matrix).T 
+
     with open(os.path.join('result', filename), 'w', newline='') as file:
         writer = csv.writer(file)
         
@@ -418,8 +493,24 @@ def save_matrix_to_csv(filename, matrix, num_repetitions):
         writer.writerow(header)
         
         for epoch, repetitions in enumerate(matrix):
-            row_data = [epoch] + repetitions
+            row_data = [epoch] + list(repetitions)
             writer.writerow(row_data)
+
+def plot_rep(df, title, filename, ylabel, num_repetitions):
+    plt.style.use("ggplot")
+    plt.rcParams.update()
+    plt.figure(figsize=(10, 5))
+    plt.title(title)
+
+    df = pd.DataFrame(np.array(df).T, columns=[f'Repetition {i+1}' for i in range(num_repetitions)])    
+    for column in df.columns:
+        plt.plot(df.index, df[column], marker='o', label=column)
+
+    plt.xlabel("epochs")
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join('result',f'{filename}.png'))
 
 
 if __name__ == '__main__':

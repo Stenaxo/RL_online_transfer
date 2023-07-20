@@ -4,4 +4,7 @@ validation
 train
 data/MNIST/raw
 result
+validation.tar
+train.tar
+test.tar
 
