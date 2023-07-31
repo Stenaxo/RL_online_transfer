@@ -9,16 +9,12 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import StepLR
 import numpy as np
-import matplotlib.pyplot as plt
 from PIL import Image
 import torch.nn.functional as F
 import random
 from torch.utils.data import DataLoader
 import csv
-import pandas as pd
-import torchvision.models as models
-from torchvision.models import resnet18, ResNet18_Weights
-import torch.nn.init as init
+from torchvision.models import resnet18
 
 parser = argparse.ArgumentParser(description="PyTorch cnn model")
 parser.add_argument(
