@@ -42,11 +42,6 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
 parser.add_argument('--optimizer', default='Adam', 
                     help = 'choose the optimiizer between SGD and ADAM', type = str)
 parser.add_argument('--repetition', default = None, type=int, help= 'Choose the number of repetitions for the trainloop')
-parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
-                    choices=model_names,
-                    help='model architecture: ' +
-                        ' | '.join(model_names) +
-                        ' (default: resnet18)')
 
 class ConvertToRGB(object):
     def __call__(self, img):
