@@ -77,7 +77,7 @@ parser.add_argument(
 class Predictor(nn.Module):
 
     """
-    A class which creates a neural network model
+    A class which create a neural network model
     """
 
     def __init__(self):
@@ -129,7 +129,7 @@ class Predictor(nn.Module):
 
 class LinearClassifier(torch.nn.Module):
     """
-    A class which creates a neural network model
+    A class which create a linear model
     """
 
     def __init__(self, input_dim=150528, output_dim=2):
