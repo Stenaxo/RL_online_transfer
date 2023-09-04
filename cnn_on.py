@@ -15,6 +15,9 @@ import random
 from torch.utils.data import DataLoader, Dataset, random_split
 import csv
 from torchvision.models import resnet18
+import json
+from torch.utils.data import Subset
+
 
 parser = argparse.ArgumentParser(description="PyTorch cnn model")
 parser.add_argument(
@@ -74,10 +77,16 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--budget", default=3000, type=int, help="Choose the budget for the online transfer"
+    "--budget", default=1500, type=int, help="Choose the budget for the online transfer"
 )
 parser.add_argument(
-    "--H", default=50, type=int, help="Choose the size for the buffer"
+    "--H", default=300, type=int, help="Choose the size for the buffer"
+)
+parser.add_argument(
+    "--pretrained", help="Choose if you want a pretrained model", action='store_true'
+)
+parser.add_argument(
+    "--random", help="Choose if you want a random distribution", action='store_true'
 )
 
 
@@ -250,14 +259,15 @@ class Strategie():
 
     def get_action(self, yt):
             # procédure de sélection d'une action
-            if self.counter[yt]< self.budget:
+            if self.counter[yt.item()]< self.budget/2:
                 return 1
             else:
                 return 0
     
     def update(self, yt):
         #mettre a jour les compteurs 
-        self.counter[yt] += 1
+        self.counter[yt.item()] += 1
+        print(self.counter)
 
 class SelectedImagesDataset(Dataset):
     def __init__(self, data):
@@ -303,12 +313,14 @@ def main_worker(args):
 
     # data_loading code
     testdir = os.path.join(args.data, "test/image_list.txt")
-    online_loss_matrix, online_accuracy_matrix, test_loss_matrix, test_accuracy_matrix = (
+    online_loss_matrix, online_accuracy_matrix, test_loss_matrix, test_accuracy_matrix, db = (
+        [],
         [],
         [],
         [],
         [],
     )
+    print(args.pretrained)
     for r in range(args.repetition):
         np.random.seed(r)
         torch.manual_seed(r)
@@ -321,9 +333,16 @@ def main_worker(args):
         
         pre_path = os.path.join('result',f'{args.model}_{args.epochs}_{args.lr}_{args.optimizer}')
         path = os.path.join(pre_path,f'best_model_{r}.pth')
-        model.load_state_dict(torch.load(path))
-        torch.save(model.state_dict(), os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), f"best_model_{r}.pth"))
-        path = os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), f"best_model_{r}.pth")
+        print(args.pretrained)
+        if args.pretrained == True:
+            model.load_state_dict(torch.load(path))
+            torch.save(model.state_dict(), os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), f"best_model_{r}.pth"))
+            path_online = os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), f"best_model_{r}.pth")
+        
+        else:
+            if r == 0:
+                torch.save(model.state_dict(), os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), f"best_model.pth"))
+                path_online = os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), f"best_model.pth")
         optimizer = {
             "Adam": torch.optim.Adam(
                 model.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -338,7 +357,7 @@ def main_worker(args):
         # Sets the learning rate to the initial LR decayed by 10 every 30 epochs
         scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
         print(f"Repetition:{r+1}")
-        list_online_loss, list_online_accuracy, list_test_loss, list_test_accuracy = train(
+        list_online_loss, list_online_accuracy, list_test_loss, list_test_accuracy, database = train(
             modele=model,
             optimizer=optimizer,
             criterion=criterion,
@@ -351,21 +370,23 @@ def main_worker(args):
             H = args.H, 
             path = path,
             args = args,
-            rep = r
+            rep = r,
+            path_online = path_online
         )
-
+        
         online_loss_matrix.append(list_online_loss)
         online_accuracy_matrix.append(list_online_accuracy)
         test_loss_matrix.append(list_test_loss)
         test_accuracy_matrix.append(list_test_accuracy)
+        db.append(database)
+        std_online_loss, std_online_accuracy, std_test_loss, std_test_accuracy = compute_std_for_matching_rows(
+                                    online_loss_matrix, online_accuracy_matrix, test_loss_matrix, test_accuracy_matrix, axis=0
+)
 
-    std_online_loss = np.std(
-        online_loss_matrix, axis=0
-    )  # Compute std along the specified axis.
-    std_online_accuracy = np.std(online_accuracy_matrix, axis=0)
-    std_test_loss = np.std(test_loss_matrix, axis=0)
-    std_test_accuracy = np.std(test_accuracy_matrix, axis=0)
-
+    with open(os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), 'database.csv'), 'w', newline='') as f:
+        writer = csv.writer(f)
+        for row in db:
+            writer.writerow(row)
     save_results_to_csv(
         filename="std_loss_and_accuracy",
         online_loss=std_online_loss,
@@ -445,7 +466,7 @@ def dataset_load(args, test_path):
         if line[1] == "0" or line[1] == "1":
             image_paths_test.append("test/" + line[0])
             labels_test.append(int(line[1]))
-
+            
     # Appliquer les transformations d'image si nécessaire
     transformation = transforms.Compose(
         [
@@ -467,9 +488,29 @@ def dataset_load(args, test_path):
     test_dataset_size = len(df_test)
     split_sizes = [test_dataset_size // 2, test_dataset_size - test_dataset_size // 2]
     test_online, test_dataset = random_split(df_test, split_sizes)
+    
 
-    online_loader = DataLoader(test_online, 1, shuffle=True)
-    testloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True)
+    desired_online_images = 1500
+    desired_online_per_class = desired_online_images // 2  # 1250 pour chaque classe
+
+    labels_one_hot = [df_test[i][1] for i in range(len(df_test))]
+    labels_classes = [torch.argmax(label).item() for label in labels_one_hot]
+
+    indices_class_0 = [i for i, label in enumerate(labels_classes) if label == 0]
+    indices_class_1 = [i for i, label in enumerate(labels_classes) if label == 1]
+
+    # Obtenez les indices pour test_online en prenant le min entre la taille réelle de la classe et le nombre souhaité
+    split_point_0 = min(desired_online_per_class, len(indices_class_0))
+    split_point_1 = min(desired_online_per_class, len(indices_class_1))
+
+    indices_online = indices_class_0[:split_point_0] + indices_class_1[:split_point_1]
+    indices_dataset = indices_class_0[split_point_0:] + indices_class_1[split_point_1:]
+
+    test_online = Subset(df_test, indices_online)
+    test_dataset = Subset(df_test, indices_dataset)
+
+    online_loader = DataLoader(test_online, batch_size = 1, shuffle=args.random)
+    testloader = DataLoader(test_dataset, batch_size=1024, shuffle=True)
 
     return testloader, online_loader
 
@@ -546,7 +587,7 @@ def iterate_data(
     return mean_loss, mean_accuracy
 
 
-def train(modele, optimizer, criterion, device, online_loader, n_epoch, testloader, sched, budget, H, path, args, rep):
+def train(modele, optimizer, criterion, device, online_loader, n_epoch, testloader, sched, budget, H, path, args, rep, path_online):
     """
     A function that allows to train the model for one repetition
 
@@ -581,50 +622,39 @@ def train(modele, optimizer, criterion, device, online_loader, n_epoch, testload
         list with all value for the validation accuracy for the validation set
     """
 
-    online_loss_0, online_accuracy_0 = iterate_data(
-        model=modele,
-        dataloader=online_loader,
-        is_training=False,
-        criterion=criterion,
-        device=device,
-    )
-    test_loss_0, test_accuracy_0 = iterate_data(
-        model=modele,
-        dataloader=testloader,
-        is_training=False,
-        criterion=criterion,
-        device=device,
-    )
 
-    print(
-        f"Train Loss 0: {online_loss_0}, Train Accuracy 0 : {online_accuracy_0} Val Loss 0: {test_loss_0}, Val Accuracy 0: {test_accuracy_0}%"
-    )
-
-    list_online_loss = [online_loss_0]
-    list_online_accuracy = [online_accuracy_0]
-    list_test_loss = [test_loss_0]
-    list_test_accuracy = [test_accuracy_0]
 
     strategy = Strategie(budget = budget, n = 2)
     strategy.reset()
     database = []
-  
+    list_online_loss = []
+    list_online_accuracy = []
+    list_test_loss = []
+    list_test_accuracy = []
+    db = []
+    i = 0
     for inputs, labels in online_loader: 
+        i+= 1
+        print(i)
         inputs = inputs.to(device)
         output = modele(inputs)
         output = torch.argmax(output, dim=1)
+        print(output)
         if strategy.get_action(output) == 1:
 
             labels = labels.squeeze(0)
             database.append((inputs.squeeze(0), labels))
+            db.append(labels)
             strategy.update(output)
             
             if len(database) % H == 0 and len(database)<(strategy.budget + 1): #buffer
                 #reentrainer le modele a partir de cette sauvegarde sur la bdd maj (avec une nouvelle obs)
                 #Reset le model avec la sauvegarde pth
                 ##########################################
-                
-                modele.load_state_dict(torch.load(path))
+                if args.pretrained == True:
+                    modele.load_state_dict(torch.load(path))
+                else:
+                    modele.load_state_dict(torch.load(path_online))
                 optimizer = {
                         "Adam": torch.optim.Adam(
                             modele.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -640,7 +670,29 @@ def train(modele, optimizer, criterion, device, online_loader, n_epoch, testload
                 selected_images_dataset = SelectedImagesDataset(database)
                 selected_images_loader = DataLoader(selected_images_dataset, batch_size=args.batch_size, shuffle=True)
                 best_accuracy = 0.0
+                online_loss_0, online_accuracy_0 = iterate_data(
+                    model=modele,
+                    dataloader=online_loader,
+                    is_training=False,
+                    criterion=criterion,
+                    device=device,
+                )
+                test_loss_0, test_accuracy_0 = iterate_data(
+                    model=modele,
+                    dataloader=testloader,
+                    is_training=False,
+                    criterion=criterion,
+                    device=device,
+                )
 
+                print(
+                    f"Train Loss 0: {online_loss_0}, Train Accuracy 0 : {online_accuracy_0} Val Loss 0: {test_loss_0}, Val Accuracy 0: {test_accuracy_0}%"
+                )
+
+                list_online_loss.append(online_loss_0)
+                list_online_accuracy.append(online_accuracy_0)
+                list_test_loss.append(test_loss_0)
+                list_test_accuracy.append(test_accuracy_0)
                 for epoch in range(n_epoch):
                     # train
                     online_loss, online_accuracy = iterate_data(
@@ -666,20 +718,21 @@ def train(modele, optimizer, criterion, device, online_loader, n_epoch, testload
                     )
                     list_test_loss.append(test_loss)
                     list_test_accuracy.append(test_accuracy)
-
-                    if max(list_test_accuracy) > best_accuracy:
-                        best_accuracy = max(list_test_accuracy)
-                        torch.save(modele.state_dict(), path)
+                    if args.pretrained == True:
+                        if max(list_test_accuracy) > best_accuracy:
+                            best_accuracy = max(list_test_accuracy)
+                            torch.save(modele.state_dict(), path_online)
                     sched.step()
                     print(
                         f"Epoch [{epoch+1}/{n_epoch}], Online Loss: {online_loss}, Online Accuracy : {online_accuracy}, Test Loss: {test_loss}, Test Accuracy: {test_accuracy}%"
                     )
 
-    return list_online_loss, list_online_accuracy, list_test_loss, list_test_accuracy
+    return list_online_loss, list_online_accuracy, list_test_loss, list_test_accuracy, db
+
 
 def save_results_to_csv(filename, online_loss, online_accuracy, test_loss, test_accuracy, args):
     """
-    A function which save results to csv
+    A function which saves results to csv.
 
     Parameters:
     --------------------------------
@@ -692,9 +745,37 @@ def save_results_to_csv(filename, online_loss, online_accuracy, test_loss, test_
     test_loss: list
         list with all value for the validation loss for the validation set
     test_accuracy : list
-        list with all value for the vaidation accuracy for the validation set
+        list with all value for the validation accuracy for the validation set
     """
+
+    # Assurez-vous que chaque élément est une sous-liste
+    online_loss = [[x] if not isinstance(x, list) else x for x in online_loss]
+    online_accuracy = [[x] if not isinstance(x, list) else x for x in online_accuracy]
+    test_loss = [[x] if not isinstance(x, list) else x for x in test_loss]
+    test_accuracy = [[x] if not isinstance(x, list) else x for x in test_accuracy]
+
+    # Trouver la longueur maximale de sous-liste parmi toutes les matrices
+    max_size = max(max(len(sublist) for sublist in matrix) for matrix in [online_loss, online_accuracy, test_loss, test_accuracy])
+
+    # Compléter chaque sous-liste avec des nan pour atteindre cette longueur
+    online_loss = [sublist + [np.nan] * (max_size - len(sublist)) for sublist in online_loss]
+    online_accuracy = [sublist + [np.nan] * (max_size - len(sublist)) for sublist in online_accuracy]
+    test_loss = [sublist + [np.nan] * (max_size - len(sublist)) for sublist in test_loss]
+    test_accuracy = [sublist + [np.nan] * (max_size - len(sublist)) for sublist in test_accuracy]
+
+    # Convertir chaque liste complétée en tableau numpy
+    online_loss = np.array(online_loss)
+    online_accuracy = np.array(online_accuracy)
+    test_loss = np.array(test_loss)
+    test_accuracy = np.array(test_accuracy)
     data = zip(online_loss, online_accuracy, test_loss, test_accuracy)
+
+    with open(os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), filename), "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Epoch", "Train Loss", "Train Accuracy", "Val Loss", "Val Accuracy"])
+        for i, row in enumerate(data):
+            writer.writerow([i] + list(row))
+
 
     with open(os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), filename), "w", newline="") as file:
         writer = csv.writer(file)
@@ -703,6 +784,7 @@ def save_results_to_csv(filename, online_loss, online_accuracy, test_loss, test_
         )
         for i, row in enumerate(data):
             writer.writerow([i] + list(row))
+
 
 
 def save_matrix_to_csv(filename, matrix, num_repetitions, args):
@@ -718,6 +800,16 @@ def save_matrix_to_csv(filename, matrix, num_repetitions, args):
     num_repetitions : int
         number of repetition we used
     """
+
+    # Assurez-vous que chaque élément est une sous-liste
+    matrix = [[x] if not isinstance(x, list) else x for x in matrix]
+
+    # Trouver la longueur maximale de sous-liste
+    max_size = max(len(sublist) for sublist in matrix)
+
+    # Compléter chaque sous-liste avec des nan pour atteindre cette longueur
+    matrix = [sublist + [np.nan] * (max_size - len(sublist)) for sublist in matrix]
+
     matrix = np.array(matrix).T
 
     with open(os.path.join(os.path.join("result_online", f"{args.model}_{args.epochs}_{args.lr}_{args.optimizer}"), filename), "w", newline="") as file:
@@ -731,5 +823,33 @@ def save_matrix_to_csv(filename, matrix, num_repetitions, args):
             writer.writerow(row_data)
 
 
+def compute_std_for_matching_rows(matrix1, matrix2, matrix3, matrix4, axis=0):
+    # Trouvez la taille de la sous-liste la plus longue parmi toutes les matrices
+    max_size = max(max(len(sublist) for sublist in matrix) for matrix in [matrix1, matrix2, matrix3, matrix4])
+    
+    # Remplissez chaque sous-liste avec des 'nan' pour qu'elles aient toutes la même taille
+    def pad_with_nan(sublist):
+        return sublist + [np.nan] * (max_size - len(sublist))
+    
+    matrix1 = [pad_with_nan(sublist) for sublist in matrix1]
+    matrix2 = [pad_with_nan(sublist) for sublist in matrix2]
+    matrix3 = [pad_with_nan(sublist) for sublist in matrix3]
+    matrix4 = [pad_with_nan(sublist) for sublist in matrix4]
+
+    # Convertissez chaque liste remplie en tableau numpy
+    matrix1 = np.array(matrix1)
+    matrix2 = np.array(matrix2)
+    matrix3 = np.array(matrix3)
+    matrix4 = np.array(matrix4)
+
+    # Calculez et renvoyez l'écart type pour chaque matrice
+    std1 = np.std(matrix1, axis=axis)
+    std2 = np.std(matrix2, axis=axis)
+    std3 = np.std(matrix3, axis=axis)
+    std4 = np.std(matrix4, axis=axis)
+    
+    return std1, std2, std3, std4
+
 if __name__ == "__main__":
     main()
+
