@@ -7,4 +7,5 @@ result
 validation.tar
 train.tar
 test.tar
-
+result_online
+__pycache__
