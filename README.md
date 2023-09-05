@@ -36,7 +36,7 @@ tar xvf test.tar
 wget https://raw.githubusercontent.com/VisionLearningGroup/taskcv-2017-public/master/classification/data/image_list.txt
 ```
 
-For more detailed information regarding the data or its utilization, please visit: [Data Information](https://github.com/VisionLearningGroup/taskcv-2017-public/tree/master/classification)
+For more detailed information regarding the data or its utilization, please visit: [Reposit information](https://github.com/VisionLearningGroup/taskcv-2017-public/tree/master/classification)
 
 ## Additional Notes
 
